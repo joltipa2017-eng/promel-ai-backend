@@ -20,9 +20,34 @@ const MONITORING_CSV_URL =
 const EVALUATION_CSV_URL =
   'https://docs.google.com/spreadsheets/d/e/2PACX-1vTd_zFcgy_c_5JDgK9wTVFLi5WeHTPF4uQBq9cOPl8vurc2DVu3DWrqwXiE1FmGcL5f2TtWjWLlGs1L/pub?gid=1608876672&single=true&output=csv';
 
+// =====================================================
 // Middleware
-app.use(cors());
-app.use(express.json());
+// =====================================================
+
+// ✅ More practical CORS for GitHub Pages + local dev + Railway
+const allowedOrigins = [
+  'https://joltipa2017-eng.github.io',
+  'http://localhost:5500',
+  'http://127.0.0.1:5500',
+  'http://localhost:8080',
+  'http://127.0.0.1:8080',
+];
+
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      // allow non-browser calls (no Origin header)
+      if (!origin) return cb(null, true);
+      if (allowedOrigins.includes(origin)) return cb(null, true);
+      return cb(null, true); // keep permissive; change to "false" if you want strict lock-down
+    },
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  })
+);
+
+// Support bigger payloads safely (AI reports can be long)
+app.use(express.json({ limit: '2mb' }));
 
 // Simple health check
 app.get('/', (req, res) => {
@@ -320,7 +345,9 @@ function computeVisualsFromMonitoring(header, data) {
     : 0;
 
   // Distribution (row-level average)
-  let good = 0, watch = 0, poor = 0;
+  let good = 0,
+    watch = 0,
+    poor = 0;
 
   data.forEach((r) => {
     const vals = [];
@@ -377,7 +404,9 @@ function computeVisualsFromEvaluation(header, data) {
   const pctPerf = Math.round(percentFromRating(avgPerf));
 
   // Distribution based on performance rating if present
-  let good = 0, watch = 0, poor = 0;
+  let good = 0,
+    watch = 0,
+    poor = 0;
 
   data.forEach((r) => {
     let perfVal = NaN;
@@ -467,7 +496,120 @@ function safeParseAiJson(text) {
   }
 }
 
+// =====================================================
+// NEW: Export helpers (Word .doc download without extra libs)
+// =====================================================
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+// Very lightweight markdown-to-HTML (basic headings + bullets)
+function markdownToHtml(md) {
+  const t = String(md || '').replace(/\r\n/g, '\n');
+
+  // Escape first, then add simple formatting
+  let html = escapeHtml(t);
+
+  // Headings
+  html = html
+    .replace(/^######\s?(.*)$/gm, '<h6>$1</h6>')
+    .replace(/^#####\s?(.*)$/gm, '<h5>$1</h5>')
+    .replace(/^####\s?(.*)$/gm, '<h4>$1</h4>')
+    .replace(/^###\s?(.*)$/gm, '<h3>$1</h3>')
+    .replace(/^##\s?(.*)$/gm, '<h2>$1</h2>')
+    .replace(/^#\s?(.*)$/gm, '<h1>$1</h1>');
+
+  // Bold/italic (basic)
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // Bullet lines -> list (simple grouping)
+  // Convert "- item" lines into <li>
+  html = html.replace(/^\s*-\s+(.*)$/gm, '<li>$1</li>');
+
+  // Wrap contiguous <li> blocks with <ul>
+  html = html.replace(/(<li>[\s\S]*?<\/li>)/g, (block) => block);
+  html = html.replace(/(?:\n)?(<li>[\s\S]*?<\/li>)(?:\n)?/g, '\n$1\n');
+  html = html.replace(/((?:\s*<li>[\s\S]*?<\/li>\s*)+)/g, '<ul>$1</ul>');
+
+  // Newlines -> paragraphs (keep headings/lists clean)
+  // Convert double newlines to paragraph breaks
+  html = html
+    .replace(/\n{2,}/g, '\n\n')
+    .split('\n\n')
+    .map((chunk) => {
+      const c = chunk.trim();
+      if (!c) return '';
+      if (c.startsWith('<h') || c.startsWith('<ul>')) return c;
+      return `<p>${c.replace(/\n/g, '<br/>')}</p>`;
+    })
+    .filter(Boolean)
+    .join('\n');
+
+  return html;
+}
+
+// =====================================================
+// NEW: Export endpoint - Word .doc
+// Dashboard calls this to download AI report as Word
+// =====================================================
+app.post('/api/export/word', (req, res) => {
+  try {
+    const { title, content, filters } = req.body || {};
+    const safeTitle = (title || 'ProMEL_AI_Report').toString().trim() || 'ProMEL_AI_Report';
+
+    if (!content) {
+      return res.status(400).json({ success: false, error: 'Missing "content" to export.' });
+    }
+
+    const filterLine = `Project: ${filters?.project || 'All'} | Period: ${filters?.period || 'All'} | Location: ${
+      filters?.location || 'All'
+    }`;
+    const generated = `Generated: ${new Date().toLocaleString()}`;
+
+    const htmlBody = markdownToHtml(content);
+
+    const docHtml = `
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>${escapeHtml(safeTitle)}</title>
+          <style>
+            body { font-family: Arial, sans-serif; font-size: 11pt; }
+            h1 { font-size: 16pt; color: #003366; }
+            h2 { font-size: 14pt; color: #003366; }
+            h3 { font-size: 12pt; color: #003366; }
+            .meta { font-size: 10pt; color: #444; margin-bottom: 12px; }
+            ul { margin-top: 6px; }
+          </style>
+        </head>
+        <body>
+          <h1>${escapeHtml(safeTitle)}</h1>
+          <div class="meta">${escapeHtml(filterLine)}<br>${escapeHtml(generated)}</div>
+          ${htmlBody}
+        </body>
+      </html>
+    `.trim();
+
+    // Force download as .doc
+    res.setHeader('Content-Type', 'application/msword; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${safeTitle.replace(/[^a-z0-9_\-]+/gi, '_')}.doc"`
+    );
+    return res.send(docHtml);
+  } catch (err) {
+    console.error('Export error /api/export/word:', err);
+    return res.status(500).json({ success: false, error: 'Failed to export Word document.' });
+  }
+});
+
+// =====================================================
 // Main AI endpoint for your dashboard card
+// =====================================================
 app.post('/api/pas-ai-chat', async (req, res) => {
   try {
     const { message, filters } = req.body || {};
@@ -476,6 +618,13 @@ app.post('/api/pas-ai-chat', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: 'Missing "message" in request body',
+      });
+    }
+
+    if (!process.env.OPENAI_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: 'OPENAI_API_KEY is not set on the server.',
       });
     }
 
@@ -497,7 +646,7 @@ app.post('/api/pas-ai-chat', async (req, res) => {
     const evaluationSummary = summariseEvaluation(evalFiltered.header, evalFiltered.data);
 
     // =====================================================
-    // NEW: Compute visuals (reliable numeric data)
+    // Compute visuals (reliable numeric data)
     // =====================================================
     const monVisuals = computeVisualsFromMonitoring(monFiltered.header, monFiltered.data);
     const evalVisuals = computeVisualsFromEvaluation(evalFiltered.header, evalFiltered.data);
@@ -512,34 +661,91 @@ Dashboard Context:
 `.trim();
 
     // =====================================================
-    // NEW: Force JSON-only output from the model
+    // ✅ CHANGE 1: Make the assistant flexible for ANY MEL request
+    // (not only reporting)
     // =====================================================
-    const jsonInstruction = `
-Return STRICT JSON only. No markdown fences. No commentary.
+    const SYSTEM_PROMPT = `
+You are ProMEL AI, a Monitoring, Evaluation & Learning (MEL) assistant for Papua New Guinea projects.
 
-The JSON schema must be exactly:
-{
-  "report_title": "string",
-  "report_markdown": "string",
-  "key_findings": ["string", "..."],
-  "recommendations": ["string", "..."],
-  "visuals": {
-    "kpi_scores": [{"label":"string","percent":number}, ...],
-    "distribution": {"good":number,"watch":number,"poor":number},
-    "combined_score_percent": number,
-    "combined_distribution": {"good":number,"watch":number,"poor":number}
-  }
-}
+You must be flexible: handle ANY MEL request, including (but not limited to):
+- definitions and explanations
+- indicators, logframes, theories of change
+- survey/interview questions, evaluation tools
+- data interpretation and trend analysis
+- reporting (narrative reports, summaries)
+- risks, mitigation, learning notes, adaptive management actions
 
-Rules:
-- report_markdown must include sections: Overview, Monitoring Summary, Evaluation Summary, Key Findings, Recommendations.
-- Base narrative ONLY on the LIVE summaries.
-- For visuals.kpi_scores and visuals.distribution, you MUST use the visuals provided below (do not invent).
+Use the LIVE summaries when the user asks about project performance.
+If the user asks a general question (not about current project performance), answer it in a practical way.
+Always return STRICT JSON following the required schema.
 `.trim();
 
-    const userPrompt = `
-You are ProMEL AI, a Monitoring, Evaluation and Learning (MEL) assistant for Papua New Guinea projects.
+    // =====================================================
+    // ✅ CHANGE 2: Force strict JSON via response_format (more reliable)
+    // This is the KEY change to improve visuals + parsing stability.
+    // =====================================================
+    const JSON_SCHEMA_INSTRUCTION = {
+      type: 'json_schema',
+      json_schema: {
+        name: 'promel_ai_response',
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            report_title: { type: 'string' },
+            report_markdown: { type: 'string' },
+            key_findings: { type: 'array', items: { type: 'string' } },
+            recommendations: { type: 'array', items: { type: 'string' } },
+            visuals: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                kpi_scores: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      label: { type: 'string' },
+                      percent: { type: 'number' },
+                    },
+                    required: ['label', 'percent'],
+                  },
+                },
+                distribution: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    good: { type: 'number' },
+                    watch: { type: 'number' },
+                    poor: { type: 'number' },
+                  },
+                  required: ['good', 'watch', 'poor'],
+                },
+                combined_score_percent: { type: 'number' },
+                combined_distribution: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    good: { type: 'number' },
+                    watch: { type: 'number' },
+                    poor: { type: 'number' },
+                  },
+                  required: ['good', 'watch', 'poor'],
+                },
+              },
+              required: ['kpi_scores', 'distribution', 'combined_score_percent', 'combined_distribution'],
+            },
+          },
+          required: ['report_title', 'report_markdown', 'key_findings', 'recommendations', 'visuals'],
+        },
+      },
+    };
 
+    // =====================================================
+    // Prompt to model
+    // =====================================================
+    const userPrompt = `
 ${filterText}
 
 LIVE MONITORING SUMMARY:
@@ -548,7 +754,7 @@ ${monitoringSummary}
 LIVE EVALUATION SUMMARY:
 ${evaluationSummary}
 
-VISUALS DATA (USE EXACTLY AS GIVEN):
+VISUALS DATA (USE EXACTLY AS GIVEN; DO NOT INVENT):
 - Monitoring KPI scores: ${JSON.stringify(monVisuals.kpi_scores)}
 - Monitoring distribution: ${JSON.stringify(monVisuals.distribution)}
 - Evaluation KPI scores: ${JSON.stringify(evalVisuals.kpi_scores)}
@@ -559,23 +765,34 @@ VISUALS DATA (USE EXACTLY AS GIVEN):
 USER REQUEST:
 ${message}
 
-${jsonInstruction}
+Output rules:
+- Always answer the user’s request (even if it is NOT a report request).
+- Put the main answer in report_markdown (use clean headings when helpful).
+- If the request is a full report, include these sections in report_markdown:
+  Overview, Monitoring Summary, Evaluation Summary, Key Findings, Recommendations.
+- visuals must be exactly the numbers provided above.
+- If no records exist, keep visuals arrays empty and distribution zeros.
 `.trim();
 
-    // Call OpenAI
+    // =====================================================
+    // Call OpenAI (Chat Completions)
+    // =====================================================
+    const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+
     const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: MODEL,
+        temperature: 0.2,
+        response_format: JSON_SCHEMA_INSTRUCTION,
         messages: [
-          { role: 'system', content: 'You output strict JSON only when requested.' },
+          { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: userPrompt },
         ],
-        temperature: 0.3,
       }),
     });
 
@@ -588,17 +805,11 @@ ${jsonInstruction}
         errorBody = { raw: text };
       }
 
-      console.error(
-        'OpenAI API error:',
-        openaiResponse.status,
-        JSON.stringify(errorBody, null, 2)
-      );
+      console.error('OpenAI API error:', openaiResponse.status, JSON.stringify(errorBody, null, 2));
 
       return res.status(openaiResponse.status).json({
         success: false,
-        error:
-          errorBody?.error?.message ||
-          `OpenAI API error (status ${openaiResponse.status})`,
+        error: errorBody?.error?.message || `OpenAI API error (status ${openaiResponse.status})`,
         status: openaiResponse.status,
       });
     }
@@ -606,7 +817,7 @@ ${jsonInstruction}
     const data = await openaiResponse.json();
     const rawText = data.choices?.[0]?.message?.content || '';
 
-    // Parse strict JSON (or fallback)
+    // Because response_format is json_schema, content should be valid JSON text.
     const aiJson = safeParseAiJson(rawText);
 
     if (!aiJson || typeof aiJson !== 'object') {
@@ -627,16 +838,18 @@ ${jsonInstruction}
       });
     }
 
-    // Return report_markdown + visuals for the dashboard
+    // ✅ Return BOTH markdown answer + visuals in stable structure
     return res.json({
       success: true,
+      // Keep compatibility with your existing dashboard:
+      // Many versions expect reply to be a string for the report body.
       reply: aiJson.report_markdown || '',
       report_title: aiJson.report_title || '',
       key_findings: Array.isArray(aiJson.key_findings) ? aiJson.key_findings : [],
       recommendations: Array.isArray(aiJson.recommendations) ? aiJson.recommendations : [],
       visuals: {
-        // Use AI-provided but should match our computed visuals
-        kpi_scores: aiJson.visuals?.kpi_scores || monVisuals.kpi_scores,
+        // Prefer AI output (but keep safe fallbacks)
+        kpi_scores: Array.isArray(aiJson.visuals?.kpi_scores) ? aiJson.visuals.kpi_scores : monVisuals.kpi_scores,
         distribution: aiJson.visuals?.distribution || monVisuals.distribution,
         combined_score_percent:
           typeof aiJson.visuals?.combined_score_percent === 'number'
