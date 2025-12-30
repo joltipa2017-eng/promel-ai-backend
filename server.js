@@ -533,7 +533,7 @@ function markdownToHtml(md) {
   // Wrap contiguous <li> blocks with <ul>
   html = html.replace(/(<li>[\s\S]*?<\/li>)/g, (block) => block);
   html = html.replace(/(?:\n)?(<li>[\s\S]*?<\/li>)(?:\n)?/g, '\n$1\n');
-  html = html.replace(/((?:\s*<li>[\s\S]*?<\/li>\s*)+/g, '<ul>$1</ul>');
+ html = html.replace(/((?:\s*<li>[\s\S]*?<\/li>\s*)+)/g, '<ul>$1</ul>');
 
   // Newlines -> paragraphs (keep headings/lists clean)
   // Convert double newlines to paragraph breaks
