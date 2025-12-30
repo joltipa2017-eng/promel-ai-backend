@@ -533,7 +533,7 @@ function markdownToHtml(md) {
   // Wrap contiguous <li> blocks with <ul>
   html = html.replace(/(<li>[\s\S]*?<\/li>)/g, (block) => block);
   html = html.replace(/(?:\n)?(<li>[\s\S]*?<\/li>)(?:\n)?/g, '\n$1\n');
-  html = html.replace(/((?:\s*<li>[\s\S]*?<\/li>\s*)+)/g, '<ul>$1</ul>');
+  html = html.replace(/((?:\s*<li>[\s\S]*?<\/li>\s*)+/g, '<ul>$1</ul>');
 
   // Newlines -> paragraphs (keep headings/lists clean)
   // Convert double newlines to paragraph breaks
@@ -734,7 +734,12 @@ Always return STRICT JSON following the required schema.
                   required: ['good', 'watch', 'poor'],
                 },
               },
-              required: ['kpi_scores', 'distribution', 'combined_score_percent', 'combined_distribution'],
+              required: [
+                'kpi_scores',
+                'distribution',
+                'combined_score_percent',
+                'combined_distribution',
+              ],
             },
           },
           required: ['report_title', 'report_markdown', 'key_findings', 'recommendations', 'visuals'],
@@ -838,24 +843,53 @@ Output rules:
       });
     }
 
+    // =====================================================
+    // ✅ NEW FIX: Guarantee reply text (no more blank reply)
+    // =====================================================
+    const safeTitle =
+      (aiJson.report_title && String(aiJson.report_title).trim()) ||
+      'ProMEL MEL Output';
+
+    const findings = Array.isArray(aiJson.key_findings) ? aiJson.key_findings : [];
+    const recs = Array.isArray(aiJson.recommendations) ? aiJson.recommendations : [];
+
+    const fallbackMarkdown = `
+# ${safeTitle}
+
+## Overview
+This output was generated from live Monitoring & Evaluation summaries using your current dashboard filters.
+
+## Key Findings
+${findings.length ? findings.map((x) => `- ${x}`).join('\n') : '- (No findings provided)'}
+
+## Recommendations
+${recs.length ? recs.map((x) => `- ${x}`).join('\n') : '- (No recommendations provided)'}
+`.trim();
+
+    const replyText =
+      (aiJson.report_markdown && String(aiJson.report_markdown).trim())
+        ? String(aiJson.report_markdown).trim()
+        : fallbackMarkdown;
+
     // ✅ Return BOTH markdown answer + visuals in stable structure
     return res.json({
       success: true,
-      // Keep compatibility with your existing dashboard:
-      // Many versions expect reply to be a string for the report body.
-      reply: aiJson.report_markdown || '',
-      report_title: aiJson.report_title || '',
-      key_findings: Array.isArray(aiJson.key_findings) ? aiJson.key_findings : [],
-      recommendations: Array.isArray(aiJson.recommendations) ? aiJson.recommendations : [],
+      reply: replyText,
+      report_title: safeTitle,
+      key_findings: findings,
+      recommendations: recs,
       visuals: {
         // Prefer AI output (but keep safe fallbacks)
-        kpi_scores: Array.isArray(aiJson.visuals?.kpi_scores) ? aiJson.visuals.kpi_scores : monVisuals.kpi_scores,
+        kpi_scores: Array.isArray(aiJson.visuals?.kpi_scores)
+          ? aiJson.visuals.kpi_scores
+          : monVisuals.kpi_scores,
         distribution: aiJson.visuals?.distribution || monVisuals.distribution,
         combined_score_percent:
           typeof aiJson.visuals?.combined_score_percent === 'number'
             ? aiJson.visuals.combined_score_percent
             : combinedVisuals.combined_score_percent,
-        combined_distribution: aiJson.visuals?.combined_distribution || combinedVisuals.combined_distribution,
+        combined_distribution:
+          aiJson.visuals?.combined_distribution || combinedVisuals.combined_distribution,
       },
       used_filters: filters || {},
       monitoring_records_used: monFiltered.data?.length || 0,
