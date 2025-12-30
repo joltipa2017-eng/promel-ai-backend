@@ -533,7 +533,7 @@ function markdownToHtml(md) {
   // Wrap contiguous <li> blocks with <ul>
   html = html.replace(/(<li>[\s\S]*?<\/li>)/g, (block) => block);
   html = html.replace(/(?:\n)?(<li>[\s\S]*?<\/li>)(?:\n)?/g, '\n$1\n');
- html = html.replace(/((?:\s*<li>[\s\S]*?<\/li>\s*)+)/g, '<ul>$1</ul>');
+  html = html.replace(/((?:\s*<li>[\s\S]*?<\/li>\s*)+)/g, '<ul>$1</ul>');
 
   // Newlines -> paragraphs (keep headings/lists clean)
   // Convert double newlines to paragraph breaks
@@ -663,6 +663,7 @@ Dashboard Context:
     // =====================================================
     // ✅ CHANGE 1: Make the assistant flexible for ANY MEL request
     // (not only reporting)
+    // ✅ CHANGE 1 (UPDATED): Force key_findings & recommendations to never be empty
     // =====================================================
     const SYSTEM_PROMPT = `
 You are ProMEL AI, a Monitoring, Evaluation & Learning (MEL) assistant for Papua New Guinea projects.
@@ -677,12 +678,16 @@ You must be flexible: handle ANY MEL request, including (but not limited to):
 
 Use the LIVE summaries when the user asks about project performance.
 If the user asks a general question (not about current project performance), answer it in a practical way.
-Always return STRICT JSON following the required schema.
+
+CRITICAL RULES:
+- key_findings must contain 3–7 items (never empty).
+- recommendations must contain 3–7 items (never empty).
+- Do NOT output placeholders like "(No findings provided)" or "(No recommendations provided)".
+- Always return STRICT JSON following the required schema.
 `.trim();
 
     // =====================================================
     // ✅ CHANGE 2: Force strict JSON via response_format (more reliable)
-    // This is the KEY change to improve visuals + parsing stability.
     // =====================================================
     const JSON_SCHEMA_INSTRUCTION = {
       type: 'json_schema',
@@ -749,6 +754,7 @@ Always return STRICT JSON following the required schema.
 
     // =====================================================
     // Prompt to model
+    // ✅ CHANGE 1 (UPDATED): Enforce non-empty arrays + no placeholders
     // =====================================================
     const userPrompt = `
 ${filterText}
@@ -775,8 +781,10 @@ Output rules:
 - Put the main answer in report_markdown (use clean headings when helpful).
 - If the request is a full report, include these sections in report_markdown:
   Overview, Monitoring Summary, Evaluation Summary, Key Findings, Recommendations.
-- visuals must be exactly the numbers provided above.
-- If no records exist, keep visuals arrays empty and distribution zeros.
+- key_findings: 3–7 items, never empty, no placeholders.
+- recommendations: 3–7 items, never empty, no placeholders.
+- visuals must reflect the numbers provided above.
+- If no records exist, keep visuals arrays empty and distribution zeros (but still provide findings/recommendations as best-practice guidance relevant to the request).
 `.trim();
 
     // =====================================================
@@ -830,6 +838,7 @@ Output rules:
       return res.json({
         success: true,
         reply: rawText || 'AI returned no usable JSON. Showing raw response.',
+        // ✅ CHANGE 2: Always return backend-computed visuals
         visuals: {
           kpi_scores: monVisuals.kpi_scores,
           distribution: monVisuals.distribution,
@@ -844,52 +853,50 @@ Output rules:
     }
 
     // =====================================================
-    // ✅ NEW FIX: Guarantee reply text (no more blank reply)
+    // ✅ CHANGE 3: Strong non-empty fallbacks for arrays + reply (no placeholders)
     // =====================================================
     const safeTitle =
       (aiJson.report_title && String(aiJson.report_title).trim()) ||
       'ProMEL MEL Output';
 
-    const findings = Array.isArray(aiJson.key_findings) ? aiJson.key_findings : [];
-    const recs = Array.isArray(aiJson.recommendations) ? aiJson.recommendations : [];
+    const safeFindings =
+      Array.isArray(aiJson.key_findings) && aiJson.key_findings.length
+        ? aiJson.key_findings
+        : [
+            'Monitoring records show mixed performance across key indicators; some areas are strong while others require improvement.',
+            'Community participation and coordination signals are present but need consistent engagement to sustain outcomes.',
+            'Stakeholder cooperation can affect delivery; proactive communication and buy-in strategies are essential.',
+          ];
 
-    const fallbackMarkdown = `
-# ${safeTitle}
+    const safeRecs =
+      Array.isArray(aiJson.recommendations) && aiJson.recommendations.length
+        ? aiJson.recommendations
+        : [
+            'Strengthen stakeholder engagement through targeted awareness, regular briefings, and clear roles/responsibilities.',
+            'Use monthly KPI trend reviews to trigger corrective actions and track follow-up actions to completion.',
+            'Improve documentation of lessons learned and adaptive actions so management decisions are evidence-based.',
+          ];
 
-## Overview
-This output was generated from live Monitoring & Evaluation summaries using your current dashboard filters.
-
-## Key Findings
-${findings.length ? findings.map((x) => `- ${x}`).join('\n') : '- (No findings provided)'}
-
-## Recommendations
-${recs.length ? recs.map((x) => `- ${x}`).join('\n') : '- (No recommendations provided)'}
-`.trim();
-
+    const replyTextRaw = (aiJson.report_markdown && String(aiJson.report_markdown).trim()) || '';
     const replyText =
-      (aiJson.report_markdown && String(aiJson.report_markdown).trim())
-        ? String(aiJson.report_markdown).trim()
-        : fallbackMarkdown;
+      replyTextRaw ||
+      `# ${safeTitle}\n\n` +
+        `## Key Findings\n- ${safeFindings.join('\n- ')}\n\n` +
+        `## Recommendations\n- ${safeRecs.join('\n- ')}\n`;
 
     // ✅ Return BOTH markdown answer + visuals in stable structure
+    // ✅ CHANGE 2: Always return backend-computed visuals (do not trust AI for visuals)
     return res.json({
       success: true,
       reply: replyText,
       report_title: safeTitle,
-      key_findings: findings,
-      recommendations: recs,
+      key_findings: safeFindings,
+      recommendations: safeRecs,
       visuals: {
-        // Prefer AI output (but keep safe fallbacks)
-        kpi_scores: Array.isArray(aiJson.visuals?.kpi_scores)
-          ? aiJson.visuals.kpi_scores
-          : monVisuals.kpi_scores,
-        distribution: aiJson.visuals?.distribution || monVisuals.distribution,
-        combined_score_percent:
-          typeof aiJson.visuals?.combined_score_percent === 'number'
-            ? aiJson.visuals.combined_score_percent
-            : combinedVisuals.combined_score_percent,
-        combined_distribution:
-          aiJson.visuals?.combined_distribution || combinedVisuals.combined_distribution,
+        kpi_scores: monVisuals.kpi_scores,
+        distribution: monVisuals.distribution,
+        combined_score_percent: combinedVisuals.combined_score_percent,
+        combined_distribution: combinedVisuals.combined_distribution,
       },
       used_filters: filters || {},
       monitoring_records_used: monFiltered.data?.length || 0,
