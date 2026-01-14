@@ -607,11 +607,140 @@ app.post("/api/export/word", (req, res) => {
 });
 
 // =====================================================
+// NEW: MEL Intent Router (keeps AI flexible, prevents unwanted reports)
+// =====================================================
+function detectMELIntent(message) {
+  const m = String(message || "").toLowerCase().trim();
+
+  // Definition / concept
+  if (m.startsWith("what is") || m.startsWith("define") || m.includes("meaning of")) {
+    return "DEFINITION";
+  }
+
+  // Tools / templates / instruments
+  if (
+    m.includes("draft") ||
+    m.includes("create") ||
+    m.includes("develop") ||
+    m.includes("design") ||
+    m.includes("template") ||
+    m.includes("tool") ||
+    m.includes("instrument") ||
+    m.includes("survey") ||
+    m.includes("questionnaire") ||
+    m.includes("interview questions") ||
+    m.includes("evaluation questions") ||
+    m.includes("indicators") ||
+    m.includes("kpi") ||
+    m.includes("logframe") ||
+    m.includes("logical framework") ||
+    m.includes("theory of change") ||
+    m.includes("toc") ||
+    m.includes("sampling") ||
+    m.includes("methodology") ||
+    m.includes("tor") ||
+    m.includes("terms of reference") ||
+    m.includes("data collection")
+  ) {
+    return "TOOLS";
+  }
+
+  // Explicit report request
+  if (m.includes("report") || m.includes("evaluation report") || m.includes("mel report")) {
+    return "REPORT";
+  }
+
+  // Dashboard interpretation / trends
+  if (
+    m.includes("dashboard") ||
+    m.includes("trend") ||
+    m.includes("performance") ||
+    m.includes("interpret") ||
+    m.includes("explain the data") ||
+    m.includes("why is") ||
+    m.includes("why are") ||
+    m.includes("what does the data say")
+  ) {
+    return "DASHBOARD_ANALYSIS";
+  }
+
+  // Learning / reflection
+  if (m.includes("lessons learned") || m.includes("after action") || m.includes("learning agenda")) {
+    return "LEARNING";
+  }
+
+  return "HOW_TO";
+}
+
+function getIntentOutputRules(intent) {
+  switch (intent) {
+    case "DEFINITION":
+      return `
+INTENT: DEFINITION
+- Give a clear definition (2–4 sentences).
+- Why it matters in MEL (2–4 bullets).
+- One short PNG/public-service example.
+- Do NOT generate a report. Do NOT refer to dashboard visuals/charts.
+`.trim();
+
+    case "TOOLS":
+      return `
+INTENT: TOOLS
+- Produce the requested tool/template in a structured way.
+- If user asks for questions: group by theme + suggest response scales.
+- If user asks for indicators: include indicator, definition, data source, frequency, disaggregation.
+- Do NOT produce a full evaluation report unless explicitly requested.
+- Do NOT describe charts/dashboards.
+`.trim();
+
+    case "DASHBOARD_ANALYSIS":
+      return `
+INTENT: DASHBOARD_ANALYSIS
+- Use the provided LIVE summaries (if provided).
+- Output TEXT ONLY (no chart descriptions).
+- Structure:
+  1) What the data suggests (3–6 bullets)
+  2) Likely causes (hypotheses)
+  3) Recommended management actions (SMART)
+`.trim();
+
+    case "REPORT":
+      return `
+INTENT: REPORT
+- Generate a narrative report (TEXT ONLY) with headings:
+  1) Executive Summary
+  2) Purpose & Scope
+  3) Methods (state assumptions if missing)
+  4) Findings
+  5) Conclusions
+  6) Recommendations
+- Do NOT describe charts; do NOT replicate dashboard cards.
+`.trim();
+
+    case "LEARNING":
+      return `
+INTENT: LEARNING
+- Provide learning questions, reflection prompts, and practical actions.
+- Keep it usable for teams (bullets, short sections).
+- Do NOT generate a report unless asked.
+`.trim();
+
+    default:
+      return `
+INTENT: HOW_TO
+- Provide practical step-by-step guidance.
+- Use short headings and bullets.
+- Do NOT generate a report unless asked.
+`.trim();
+  }
+}
+
+// =====================================================
 // Main AI endpoint for your dashboard card
 // =====================================================
 app.post("/api/pas-ai-chat", async (req, res) => {
   try {
-    const { message, filters } = req.body || {};
+    const { message, filters, intent_override } = req.body || {};
 
     if (!message) {
       return res.status(400).json({
@@ -629,6 +758,7 @@ app.post("/api/pas-ai-chat", async (req, res) => {
 
     // =====================================================
     // STEP 4: Fetch live sheet data + filter + summarise
+    // (kept as-is, but AI prompt will ONLY include these when needed)
     // =====================================================
     const [monCsvText, evalCsvText] = await Promise.all([
       fetchCsvText(MONITORING_CSV_URL),
@@ -646,6 +776,7 @@ app.post("/api/pas-ai-chat", async (req, res) => {
 
     // =====================================================
     // Compute visuals (reliable numeric data)
+    // (kept as-is; backend returns these regardless; AI is not allowed to invent them)
     // =====================================================
     const monVisuals = computeVisualsFromMonitoring(monFiltered.header, monFiltered.data);
     const evalVisuals = computeVisualsFromEvaluation(evalFiltered.header, evalFiltered.data);
@@ -659,7 +790,20 @@ Dashboard Context:
 `.trim();
 
     // =====================================================
+    // ✅ NEW: Determine MEL intent (router)
+    // - Prevents "What is evaluation?" from turning into an evaluation report
+    // =====================================================
+    const intent =
+      (intent_override && String(intent_override).trim()) || detectMELIntent(message);
+
+    const intentRules = getIntentOutputRules(intent);
+
+    // Only include live summaries in prompt when user asks to analyze/report performance
+    const includeLiveDataInPrompt = intent === "REPORT" || intent === "DASHBOARD_ANALYSIS";
+
+    // =====================================================
     // Make assistant flexible for ANY MEL request
+    // (Updated rules: answer what was asked; text-first; don't replicate visuals)
     // =====================================================
     const SYSTEM_PROMPT = `
 You are ProMEL AI, a Monitoring, Evaluation & Learning (MEL) assistant for Papua New Guinea projects.
@@ -672,18 +816,22 @@ You must be flexible: handle ANY MEL request, including (but not limited to):
 - reporting (narrative reports, summaries)
 - risks, mitigation, learning notes, adaptive management actions
 
-Use the LIVE summaries when the user asks about project performance.
-If the user asks a general question (not about current project performance), answer it in a practical way.
+CRITICAL BEHAVIOR:
+- Answer ONLY what the user asked for. Do NOT generate a report unless the user asks for a report.
+- TEXT OUTPUT ONLY: Do not describe charts/graphs/cards; do not replicate dashboard visuals.
+- If LIVE summaries are provided, use them ONLY when the intent is REPORT or DASHBOARD_ANALYSIS.
+- If LIVE summaries are not provided, answer as general MEL guidance.
 
-CRITICAL RULES:
+JSON OUTPUT REQUIREMENTS:
+- Always return STRICT JSON following the required schema.
 - key_findings must contain 3–7 items (never empty).
 - recommendations must contain 3–7 items (never empty).
 - Do NOT output placeholders like "(No findings provided)" or "(No recommendations provided)".
-- Always return STRICT JSON following the required schema.
 `.trim();
 
     // =====================================================
     // Structured Outputs schema (Responses API)
+    // (kept as-is to avoid changing dashboard expectations)
     // =====================================================
     const JSON_SCHEMA = {
       name: "promel_ai_response",
@@ -742,9 +890,10 @@ CRITICAL RULES:
     };
 
     // =====================================================
-    // Prompt to model
+    // ✅ UPDATED: Prompt to model (conditional live data injection)
     // =====================================================
-    const userPrompt = `
+    const liveDataBlock = includeLiveDataInPrompt
+      ? `
 ${filterText}
 
 LIVE MONITORING SUMMARY:
@@ -752,27 +901,42 @@ ${monitoringSummary}
 
 LIVE EVALUATION SUMMARY:
 ${evaluationSummary}
+`.trim()
+      : `
+NOTE: LIVE summaries are intentionally NOT provided for this request.
+Answer as general MEL guidance (do not assume project performance).
+`.trim();
 
-VISUALS DATA (USE EXACTLY AS GIVEN; DO NOT INVENT):
+    // We still pass visuals data so the AI can place them into the JSON schema,
+    // BUT we explicitly forbid inventing/altering numbers.
+    // (Dashboard ultimately uses backend-computed visuals anyway.)
+    const visualsBlock = `
+VISUALS DATA (USE EXACTLY AS GIVEN; DO NOT INVENT OR EXPLAIN AS CHARTS):
 - Monitoring KPI scores: ${JSON.stringify(monVisuals.kpi_scores)}
 - Monitoring distribution: ${JSON.stringify(monVisuals.distribution)}
 - Evaluation KPI scores: ${JSON.stringify(evalVisuals.kpi_scores)}
 - Evaluation distribution: ${JSON.stringify(evalVisuals.distribution)}
 - Combined score percent: ${JSON.stringify(combinedVisuals.combined_score_percent)}
 - Combined distribution: ${JSON.stringify(combinedVisuals.combined_distribution)}
+`.trim();
+
+    const userPrompt = `
+${intentRules}
+
+${liveDataBlock}
+
+${visualsBlock}
 
 USER REQUEST:
 ${message}
 
 Output rules:
-- Always answer the user’s request (even if it is NOT a report request).
-- Put the main answer in report_markdown (use clean headings when helpful).
-- If the request is a full report, include these sections in report_markdown:
-  Overview, Monitoring Summary, Evaluation Summary, Key Findings, Recommendations.
+- Put the main answer in report_markdown (use clean headings/bullets).
+- Do NOT generate a report unless intent is REPORT or the user explicitly asked for a report.
+- TEXT ONLY: do not describe dashboards/charts/cards.
 - key_findings: 3–7 items, never empty, no placeholders.
 - recommendations: 3–7 items, never empty, no placeholders.
-- visuals must reflect the numbers provided above.
-- If no records exist, keep visuals arrays empty and distribution zeros (but still provide findings/recommendations as best-practice guidance relevant to the request).
+- visuals must reflect the numbers provided above (but do not discuss them as charts).
 `.trim();
 
     // =====================================================
@@ -855,18 +1019,18 @@ Output rules:
       Array.isArray(aiJson.key_findings) && aiJson.key_findings.length
         ? aiJson.key_findings
         : [
-            "Monitoring records show mixed performance across key indicators; some areas are strong while others require improvement.",
-            "Community participation and coordination signals are present but need consistent engagement to sustain outcomes.",
-            "Stakeholder cooperation can affect delivery; proactive communication and buy-in strategies are essential.",
+            "Clear MEL concepts and tools improve decision-making and accountability throughout the project cycle.",
+            "Using fit-for-purpose indicators and data collection methods increases the reliability of findings and learning.",
+            "Regular reflection and adaptive action planning strengthens outcomes and sustainability over time.",
           ];
 
     const safeRecs =
       Array.isArray(aiJson.recommendations) && aiJson.recommendations.length
         ? aiJson.recommendations
         : [
-            "Strengthen stakeholder engagement through targeted awareness, regular briefings, and clear roles/responsibilities.",
-            "Use monthly KPI trend reviews to trigger corrective actions and track follow-up actions to completion.",
-            "Improve documentation of lessons learned and adaptive actions so management decisions are evidence-based.",
+            "Use an intent-based approach: definitions, tools, analysis, and reports should be produced only when requested.",
+            "Standardize templates (indicators, tools, learning notes) so teams apply MEL consistently across projects.",
+            "Institutionalize periodic learning reviews and management action tracking to close feedback loops.",
           ];
 
     const replyTextRaw = (aiJson.report_markdown && String(aiJson.report_markdown).trim()) || "";
@@ -892,6 +1056,7 @@ Output rules:
       used_filters: filters || {},
       monitoring_records_used: monFiltered.data?.length || 0,
       evaluation_records_used: evalFiltered.data?.length || 0,
+      detected_intent: intent, // helpful for debugging (front-end can show or ignore)
     });
   } catch (err) {
     console.error("Backend error in /api/pas-ai-chat:", err);
