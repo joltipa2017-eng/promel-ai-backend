@@ -5,7 +5,7 @@ import dotenv from "dotenv";
 import express from "express";
 import cors from "cors";
 
-// Load .env explicitly
+// ✅ Load .env explicitly
 dotenv.config();
 
 const app = express();
@@ -44,11 +44,10 @@ const finalAllowedOrigins = [...new Set([...allowedOrigins, ...extraOrigins])];
 app.use(
   cors({
     origin: (origin, cb) => {
-      // allow non-browser calls (no Origin header)
       if (!origin) return cb(null, true);
       if (finalAllowedOrigins.includes(origin)) return cb(null, true);
 
-      // keep permissive; change to "false" if you want strict lock-down
+      // keep permissive; change to cb(null, false) for strict lock-down
       return cb(null, true);
     },
     methods: ["GET", "POST", "OPTIONS"],
@@ -220,7 +219,6 @@ function percentFromRating(avgRating, max = 5) {
   return Math.max(0, Math.min(100, pct));
 }
 
-// Keep summaries compact so you don't overload the prompt
 function summariseMonitoring(header, data) {
   if (!header.length) return "No monitoring sheet loaded.";
   if (!data.length) return "No matching monitoring records for current filters.";
@@ -247,7 +245,6 @@ function summariseMonitoring(header, data) {
     }
   });
 
-  // last 5 (compact)
   const latest = data.slice(-5).reverse();
   const latestLines = latest
     .map((r, i) => {
@@ -319,14 +316,11 @@ ${latestLines}`;
 }
 
 // =====================================================
-// NEW: Visuals builder (backend computed, reliable)
+// Visuals builder (backend computed, reliable)
 // =====================================================
 function computeVisualsFromMonitoring(header, data) {
   if (!header?.length || !data?.length) {
-    return {
-      kpi_scores: [],
-      distribution: { good: 0, watch: 0, poor: 0 },
-    };
+    return { kpi_scores: [], distribution: { good: 0, watch: 0, poor: 0 } };
   }
 
   const headersLower = header.map(safeLower);
@@ -354,10 +348,7 @@ function computeVisualsFromMonitoring(header, data) {
     ? Math.round(available.reduce((a, x) => a + x, 0) / available.length)
     : 0;
 
-  // Distribution (row-level average)
-  let good = 0,
-    watch = 0,
-    poor = 0;
+  let good = 0, watch = 0, poor = 0;
 
   data.forEach((r) => {
     const vals = [];
@@ -390,10 +381,7 @@ function computeVisualsFromMonitoring(header, data) {
 
 function computeVisualsFromEvaluation(header, data) {
   if (!header?.length || !data?.length) {
-    return {
-      kpi_scores: [],
-      distribution: { good: 0, watch: 0, poor: 0 },
-    };
+    return { kpi_scores: [], distribution: { good: 0, watch: 0, poor: 0 } };
   }
 
   const headersLower = header.map(safeLower);
@@ -413,10 +401,7 @@ function computeVisualsFromEvaluation(header, data) {
   const pctImpact = Math.round(percentFromRating(avgImpact));
   const pctPerf = Math.round(percentFromRating(avgPerf));
 
-  // Distribution based on performance rating if present
-  let good = 0,
-    watch = 0,
-    poor = 0;
+  let good = 0, watch = 0, poor = 0;
 
   data.forEach((r) => {
     let perfVal = NaN;
@@ -453,7 +438,6 @@ function computeVisualsFromEvaluation(header, data) {
 }
 
 function mergeVisuals(monVisuals, evalVisuals) {
-  // Combined distribution and a combined KPI score (simple average of available percents)
   const combinedDist = {
     good: (monVisuals?.distribution?.good || 0) + (evalVisuals?.distribution?.good || 0),
     watch: (monVisuals?.distribution?.watch || 0) + (evalVisuals?.distribution?.watch || 0),
@@ -476,13 +460,12 @@ function mergeVisuals(monVisuals, evalVisuals) {
 }
 
 // =====================================================
-// NEW: Safe parse JSON from AI response (handles ```json)
+// Safe parse JSON from AI response
 // =====================================================
 function safeParseAiJson(text) {
   if (!text) return null;
 
   let t = String(text).trim();
-
   t = t.replace(/^```json\s*/i, "");
   t = t.replace(/^```\s*/i, "");
   t = t.replace(/```$/i, "").trim();
@@ -503,7 +486,28 @@ function safeParseAiJson(text) {
 }
 
 // =====================================================
-// NEW: Export helpers (Word .doc download without extra libs)
+// Extract output text robustly (IMPORTANT FIX)
+// =====================================================
+function extractResponseText(data) {
+  if (!data) return "";
+  if (typeof data.output_text === "string" && data.output_text.trim()) return data.output_text;
+
+  // Fallback: try to reconstruct from output[].content[]
+  const chunks = [];
+  const out = Array.isArray(data.output) ? data.output : [];
+  for (const item of out) {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    for (const c of content) {
+      if (typeof c?.text === "string") chunks.push(c.text);
+      // Some variants use nested objects; keep it tolerant
+      if (typeof c?.content === "string") chunks.push(c.content);
+    }
+  }
+  return chunks.join("\n").trim();
+}
+
+// =====================================================
+// Export helpers (Word .doc download without extra libs)
 // =====================================================
 function escapeHtml(str) {
   return String(str || "")
@@ -512,13 +516,10 @@ function escapeHtml(str) {
     .replace(/>/g, "&gt;");
 }
 
-// Very lightweight markdown-to-HTML (basic headings + bullets)
 function markdownToHtml(md) {
   const t = String(md || "").replace(/\r\n/g, "\n");
-
   let html = escapeHtml(t);
 
-  // Headings
   html = html
     .replace(/^######\s?(.*)$/gm, "<h6>$1</h6>")
     .replace(/^#####\s?(.*)$/gm, "<h5>$1</h5>")
@@ -527,15 +528,12 @@ function markdownToHtml(md) {
     .replace(/^##\s?(.*)$/gm, "<h2>$1</h2>")
     .replace(/^#\s?(.*)$/gm, "<h1>$1</h1>");
 
-  // Bold/italic (basic)
   html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
 
-  // Bullet lines -> list
   html = html.replace(/^\s*-\s+(.*)$/gm, "<li>$1</li>");
   html = html.replace(/((?:\s*<li>[\s\S]*?<\/li>\s*)+)/g, "<ul>$1</ul>");
 
-  // Newlines -> paragraphs
   html = html
     .replace(/\n{2,}/g, "\n\n")
     .split("\n\n")
@@ -552,8 +550,7 @@ function markdownToHtml(md) {
 }
 
 // =====================================================
-// NEW: Export endpoint - Word .doc
-// Dashboard calls this to download AI report as Word
+// Export endpoint - Word .doc
 // =====================================================
 app.post("/api/export/word", (req, res) => {
   try {
@@ -593,7 +590,6 @@ app.post("/api/export/word", (req, res) => {
       </html>
     `.trim();
 
-    // Force download as .doc
     res.setHeader("Content-Type", "application/msword; charset=utf-8");
     res.setHeader(
       "Content-Disposition",
@@ -607,17 +603,13 @@ app.post("/api/export/word", (req, res) => {
 });
 
 // =====================================================
-// NEW: MEL Intent Router (keeps AI flexible, prevents unwanted reports)
+// MEL Intent Router
 // =====================================================
 function detectMELIntent(message) {
   const m = String(message || "").toLowerCase().trim();
 
-  // Definition / concept
-  if (m.startsWith("what is") || m.startsWith("define") || m.includes("meaning of")) {
-    return "DEFINITION";
-  }
+  if (m.startsWith("what is") || m.startsWith("define") || m.includes("meaning of")) return "DEFINITION";
 
-  // Tools / templates / instruments
   if (
     m.includes("draft") ||
     m.includes("create") ||
@@ -645,12 +637,8 @@ function detectMELIntent(message) {
     return "TOOLS";
   }
 
-  // Explicit report request
-  if (m.includes("report") || m.includes("evaluation report") || m.includes("mel report")) {
-    return "REPORT";
-  }
+  if (m.includes("report") || m.includes("evaluation report") || m.includes("mel report")) return "REPORT";
 
-  // Dashboard interpretation / trends
   if (
     m.includes("dashboard") ||
     m.includes("trend") ||
@@ -664,10 +652,8 @@ function detectMELIntent(message) {
     return "DASHBOARD_ANALYSIS";
   }
 
-  // Learning / reflection
-  if (m.includes("lessons learned") || m.includes("after action") || m.includes("learning agenda")) {
+  if (m.includes("lessons learned") || m.includes("after action") || m.includes("learning agenda"))
     return "LEARNING";
-  }
 
   return "HOW_TO";
 }
@@ -743,23 +729,13 @@ app.post("/api/pas-ai-chat", async (req, res) => {
     const { message, filters, intent_override } = req.body || {};
 
     if (!message) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing "message" in request body',
-      });
+      return res.status(400).json({ success: false, error: 'Missing "message" in request body' });
     }
 
     if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({
-        success: false,
-        error: "OPENAI_API_KEY is not set on the server.",
-      });
+      return res.status(500).json({ success: false, error: "OPENAI_API_KEY is not set on the server." });
     }
 
-    // =====================================================
-    // STEP 4: Fetch live sheet data + filter + summarise
-    // (kept as-is, but AI prompt will ONLY include these when needed)
-    // =====================================================
     const [monCsvText, evalCsvText] = await Promise.all([
       fetchCsvText(MONITORING_CSV_URL),
       fetchCsvText(EVALUATION_CSV_URL),
@@ -774,10 +750,6 @@ app.post("/api/pas-ai-chat", async (req, res) => {
     const monitoringSummary = summariseMonitoring(monFiltered.header, monFiltered.data);
     const evaluationSummary = summariseEvaluation(evalFiltered.header, evalFiltered.data);
 
-    // =====================================================
-    // Compute visuals (reliable numeric data)
-    // (kept as-is; backend returns these regardless; AI is not allowed to invent them)
-    // =====================================================
     const monVisuals = computeVisualsFromMonitoring(monFiltered.header, monFiltered.data);
     const evalVisuals = computeVisualsFromEvaluation(evalFiltered.header, evalFiltered.data);
     const combinedVisuals = mergeVisuals(monVisuals, evalVisuals);
@@ -789,36 +761,17 @@ Dashboard Context:
 - Project: ${filters?.project || "All"}
 `.trim();
 
-    // =====================================================
-    // ✅ NEW: Determine MEL intent (router)
-    // - Prevents "What is evaluation?" from turning into an evaluation report
-    // =====================================================
-    const intent =
-      (intent_override && String(intent_override).trim()) || detectMELIntent(message);
-
+    const intent = (intent_override && String(intent_override).trim()) || detectMELIntent(message);
     const intentRules = getIntentOutputRules(intent);
 
-    // Only include live summaries in prompt when user asks to analyze/report performance
     const includeLiveDataInPrompt = intent === "REPORT" || intent === "DASHBOARD_ANALYSIS";
 
-    // =====================================================
-    // Make assistant flexible for ANY MEL request
-    // (Updated rules: answer what was asked; text-first; don't replicate visuals)
-    // =====================================================
     const SYSTEM_PROMPT = `
 You are ProMEL AI, a Monitoring, Evaluation & Learning (MEL) assistant for Papua New Guinea projects.
 
-You must be flexible: handle ANY MEL request, including (but not limited to):
-- definitions and explanations
-- indicators, logframes, theories of change
-- survey/interview questions, evaluation tools
-- data interpretation and trend analysis
-- reporting (narrative reports, summaries)
-- risks, mitigation, learning notes, adaptive management actions
-
 CRITICAL BEHAVIOR:
 - Answer ONLY what the user asked for. Do NOT generate a report unless the user asks for a report.
-- TEXT OUTPUT ONLY: Do not describe charts/graphs/cards; do not replicate dashboard visuals.
+- TEXT OUTPUT ONLY: do not describe charts/graphs/cards; do not replicate dashboard visuals.
 - If LIVE summaries are provided, use them ONLY when the intent is REPORT or DASHBOARD_ANALYSIS.
 - If LIVE summaries are not provided, answer as general MEL guidance.
 
@@ -826,13 +779,8 @@ JSON OUTPUT REQUIREMENTS:
 - Always return STRICT JSON following the required schema.
 - key_findings must contain 3–7 items (never empty).
 - recommendations must contain 3–7 items (never empty).
-- Do NOT output placeholders like "(No findings provided)" or "(No recommendations provided)".
 `.trim();
 
-    // =====================================================
-    // Structured Outputs schema (Responses API)
-    // (kept as-is to avoid changing dashboard expectations)
-    // =====================================================
     const JSON_SCHEMA = {
       name: "promel_ai_response",
       strict: true,
@@ -889,9 +837,6 @@ JSON OUTPUT REQUIREMENTS:
       },
     };
 
-    // =====================================================
-    // ✅ UPDATED: Prompt to model (conditional live data injection)
-    // =====================================================
     const liveDataBlock = includeLiveDataInPrompt
       ? `
 ${filterText}
@@ -907,11 +852,8 @@ NOTE: LIVE summaries are intentionally NOT provided for this request.
 Answer as general MEL guidance (do not assume project performance).
 `.trim();
 
-    // We still pass visuals data so the AI can place them into the JSON schema,
-    // BUT we explicitly forbid inventing/altering numbers.
-    // (Dashboard ultimately uses backend-computed visuals anyway.)
     const visualsBlock = `
-VISUALS DATA (USE EXACTLY AS GIVEN; DO NOT INVENT OR EXPLAIN AS CHARTS):
+VISUALS DATA (USE EXACTLY AS GIVEN; DO NOT INVENT):
 - Monitoring KPI scores: ${JSON.stringify(monVisuals.kpi_scores)}
 - Monitoring distribution: ${JSON.stringify(monVisuals.distribution)}
 - Evaluation KPI scores: ${JSON.stringify(evalVisuals.kpi_scores)}
@@ -932,16 +874,11 @@ ${message}
 
 Output rules:
 - Put the main answer in report_markdown (use clean headings/bullets).
-- Do NOT generate a report unless intent is REPORT or the user explicitly asked for a report.
-- TEXT ONLY: do not describe dashboards/charts/cards.
-- key_findings: 3–7 items, never empty, no placeholders.
-- recommendations: 3–7 items, never empty, no placeholders.
-- visuals must reflect the numbers provided above (but do not discuss them as charts).
+- key_findings: 3–7 items, never empty.
+- recommendations: 3–7 items, never empty.
+- visuals must reflect the numbers provided above.
 `.trim();
 
-    // =====================================================
-    // ✅ UPDATED: Call OpenAI using Responses API + json_schema
-    // =====================================================
     const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
     const openaiResponse = await fetch("https://api.openai.com/v1/responses", {
@@ -957,10 +894,14 @@ Output rules:
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: userPrompt },
         ],
+
+        // ✅ FIX: Correct Structured Outputs format for Responses API
         text: {
           format: {
             type: "json_schema",
-            ...JSON_SCHEMA,
+            name: JSON_SCHEMA.name,
+            strict: JSON_SCHEMA.strict,
+            schema: JSON_SCHEMA.schema,
           },
         },
       }),
@@ -986,13 +927,12 @@ Output rules:
 
     const data = await openaiResponse.json();
 
-    // Responses API convenience field:
-    const rawText = data.output_text || "";
+    // ✅ FIX: Extract robustly
+    const rawText = extractResponseText(data);
 
     const aiJson = safeParseAiJson(rawText);
 
     if (!aiJson || typeof aiJson !== "object") {
-      // Fallback: still return computed visuals so dashboard can draw charts
       return res.json({
         success: true,
         reply: rawText || "AI returned no usable JSON. Showing raw response.",
@@ -1009,9 +949,6 @@ Output rules:
       });
     }
 
-    // =====================================================
-    // Strong non-empty fallbacks for arrays + reply (no placeholders)
-    // =====================================================
     const safeTitle =
       (aiJson.report_title && String(aiJson.report_title).trim()) || "ProMEL MEL Output";
 
@@ -1040,7 +977,6 @@ Output rules:
         `## Key Findings\n- ${safeFindings.join("\n- ")}\n\n` +
         `## Recommendations\n- ${safeRecs.join("\n- ")}\n`;
 
-    // ✅ Always return backend-computed visuals (do not trust AI for visuals)
     return res.json({
       success: true,
       reply: replyText,
@@ -1056,14 +992,11 @@ Output rules:
       used_filters: filters || {},
       monitoring_records_used: monFiltered.data?.length || 0,
       evaluation_records_used: evalFiltered.data?.length || 0,
-      detected_intent: intent, // helpful for debugging (front-end can show or ignore)
+      detected_intent: intent,
     });
   } catch (err) {
     console.error("Backend error in /api/pas-ai-chat:", err);
-    return res.status(500).json({
-      success: false,
-      error: "Server error in /api/pas-ai-chat",
-    });
+    return res.status(500).json({ success: false, error: "Server error in /api/pas-ai-chat" });
   }
 });
 
